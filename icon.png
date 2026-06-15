@@ -1,0 +1,218 @@
+// ============================================================
+// engine.js — シード乱数・色・月齢・刻・日替わり構図
+// RN版 prng.js / daily.js を Web(Canvas) 向けに移植
+// ============================================================
+
+// mulberry32
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const dateSeed = (d) => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+function rgbToHex([r, g, b]) {
+  const c = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${c(r)}${c(g)}${c(b)}`;
+}
+const shade = (hex, f) => rgbToHex(hexToRgb(hex).map((v) => v * f));
+const mix = (a, b, t) => {
+  const A = hexToRgb(a), B = hexToRgb(b);
+  return rgbToHex([0, 1, 2].map((i) => A[i] + (B[i] - A[i]) * t));
+};
+
+// 月齢
+function moonPhase(date) {
+  const synodic = 29.530588853 * 86400000;
+  const ref = Date.UTC(2000, 0, 6, 18, 14);
+  let p = ((date.getTime() - ref) % synodic) / synodic;
+  if (p < 0) p += 1;
+  return p;
+}
+function moonName(p) {
+  if (p < 0.04 || p > 0.96) return '新月';
+  if (p < 0.16) return '三日月';
+  if (p < 0.30) return '上弦の月';
+  if (p < 0.46) return '十三夜';
+  if (p < 0.54) return '満月';
+  if (p < 0.66) return '十六夜';
+  if (p < 0.84) return '下弦の月';
+  return '有明の月';
+}
+
+// 刻
+function timeInfo(d = new Date()) {
+  const h = d.getHours();
+  if (h < 3)  return { n: '夜半', tint: 'rgba(14,22,66,0.22)', day: false };
+  if (h < 6)  return { n: '暁',   tint: 'rgba(255,128,88,0.10)', day: false };
+  if (h < 10) return { n: '朝',   tint: 'rgba(255,214,158,0.08)', day: true };
+  if (h < 15) return { n: '昼',   tint: 'rgba(255,250,235,0.05)', day: true };
+  if (h < 18) return { n: '夕',   tint: 'rgba(224,108,128,0.13)', day: true };
+  if (h < 22) return { n: '宵',   tint: 'rgba(66,76,168,0.13)', day: false };
+  return { n: '夜半', tint: 'rgba(14,22,66,0.22)', day: false };
+}
+
+const GOLD = '#d9b667', GOLD_DEEP = '#a8822f';
+
+// 日替わり構図（W,Hは描画時の実ピクセル）
+function buildScene({ baseDate, sessionSeed, sekki, now, W, H }) {
+  const dSeed = dateSeed(baseDate);
+  const R = mulberry32(dSeed);
+  const M = mulberry32(((sessionSeed ^ (dSeed * 2654435761)) >>> 0));
+  const tod = timeInfo(now);
+  const [c0, c1] = sekki.c;
+
+  const sky = {
+    top: shade(c0, 0.55 + R() * 0.3),
+    mid: shade(mix(c0, c1, 0.6), 0.85 + R() * 0.3),
+    bottom: shade(c1, 0.9 + R() * 0.4),
+  };
+
+  const phase = moonPhase(baseDate);
+  const cel = {
+    type: tod.day ? 'sun' : 'moon',
+    x: W * (0.5 + R() * 0.38), y: H * (0.1 + R() * 0.14),
+    r: (24 + R() * 26) * (W / 390), haloK: 2.6 + M() * 1.2,
+    phase, color: tod.day ? '#f3dc9e' : '#f2ead2',
+  };
+
+  const clouds = Array.from({ length: 2 + Math.floor(R() * 4) }, () => ({
+    cx: W * R(), cy: H * (0.05 + R() * 0.3),
+    rx: (70 + R() * 170) * (W / 390), ry: (18 + R() * 42) * (W / 390),
+    fill: shade(c0, 0.45 + R() * 0.3), o: 0.18 + R() * 0.25, dx: (M() - 0.5) * 24,
+  }));
+
+  const splashes = Array.from({ length: 1 + Math.floor(R() * 2) }, () => {
+    const cx = W * (0.12 + R() * 0.76), cy = H * (0.06 + R() * 0.34);
+    const rot = (R() * 180 + (M() - 0.5) * 10) * Math.PI / 180;
+    return Array.from({ length: 3 }, (_, j) => ({
+      cx: cx + (R() - 0.5) * 60, cy: cy + (R() - 0.5) * 36,
+      rx: (60 + R() * 120) * (W / 390), ry: (8 + R() * 22) * (W / 390),
+      rot: rot + j * (8 + R() * 14) * Math.PI / 180,
+      o: 0.05 + R() * 0.09, fill: j === 1 ? GOLD : GOLD_DEEP,
+    }));
+  }).flat();
+
+  const ridgeN = 2 + Math.floor(R() * 3);
+  const ridges = Array.from({ length: ridgeN }, (_, i) => {
+    const baseY = H * (0.52 + i * (0.34 / ridgeN) + R() * 0.05);
+    const jag = (14 + R() * 55) * (H / 844);
+    const segs = 6 + Math.floor(R() * 4);
+    const pts = [];
+    for (let s = 0; s <= segs; s++) pts.push([(W / segs) * s, baseY + (R() - 0.5) * 2 * jag]);
+    return { pts, fill: shade(mix(c0, '#000000', 0.25), 0.95 - i * 0.22), o: 0.92 };
+  });
+
+  const hasWater = R() < 0.55;
+  const water = hasWater ? {
+    y: H * (0.8 + R() * 0.07), fill: shade(c0, 0.5),
+    lines: Array.from({ length: 7 + Math.floor(R() * 8) }, () => ({
+      x: W * R(), y: H * (0.82 + R() * 0.16), w: (14 + R() * 90) * (W / 390),
+      o: 0.08 + R() * 0.3, gold: R() < 0.45,
+    })),
+  } : null;
+
+  const flecks = Array.from({ length: 36 + Math.floor(R() * 44) }, () => ({
+    x: W * R() + (M() - 0.5) * 36, y: H * R() * 0.72 + (M() - 0.5) * 24,
+    r: (0.8 + R() * 2.2) * (W / 390), o: 0.22 + M() * 0.6,
+  }));
+
+  const grain = Array.from({ length: 46 }, () => ({
+    x: W * R(), y: H * R(), r: (0.5 + R() * 1.1) * (W / 390), o: 0.02 + R() * 0.04,
+  }));
+
+  return { W, H, sky, cel, clouds, splashes, ridges, water, flecks, grain,
+    vignette: 0.42 + R() * 0.22, tod };
+}
+
+// Canvasへ描画
+function drawScene(ctx, spec) {
+  const { W, H, sky, cel, clouds, splashes, ridges, water, flecks, grain, vignette } = spec;
+
+  // 空
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, sky.top); g.addColorStop(0.55, sky.mid); g.addColorStop(1, sky.bottom);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // 天体の暈
+  const halo = ctx.createRadialGradient(cel.x, cel.y, 0, cel.x, cel.y, cel.r * cel.haloK);
+  halo.addColorStop(0, cel.color + '80');
+  halo.addColorStop(0.5, cel.color + '28');
+  halo.addColorStop(1, cel.color + '00');
+  ctx.fillStyle = halo;
+  ctx.fillRect(cel.x - cel.r * cel.haloK, cel.y - cel.r * cel.haloK, cel.r * cel.haloK * 2, cel.r * cel.haloK * 2);
+
+  // 天体本体
+  ctx.globalAlpha = 0.96; ctx.fillStyle = cel.color;
+  ctx.beginPath(); ctx.arc(cel.x, cel.y, cel.r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // 月相の影
+  if (cel.type === 'moon') {
+    const illum = 1 - Math.abs(cel.phase - 0.5) * 2;
+    if (illum < 0.97) {
+      const waxing = cel.phase < 0.5;
+      const dx = (1 - illum) * cel.r * 1.7 * (waxing ? -1 : 1);
+      ctx.globalAlpha = 0.94; ctx.fillStyle = sky.top;
+      ctx.beginPath(); ctx.arc(cel.x + dx, cel.y - cel.r * 0.08, cel.r * 1.02, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  const ellipse = (cx, cy, rx, ry, rot, fill, o) => {
+    ctx.save(); ctx.globalAlpha = o; ctx.fillStyle = fill;
+    ctx.translate(cx, cy); if (rot) ctx.rotate(rot);
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  };
+  clouds.forEach((c) => ellipse(c.cx + c.dx, c.cy, c.rx, c.ry, 0, c.fill, c.o));
+  splashes.forEach((s) => ellipse(s.cx, s.cy, s.rx, s.ry, s.rot, s.fill, s.o));
+
+  // 山稜
+  ridges.forEach((r) => {
+    ctx.globalAlpha = r.o; ctx.fillStyle = r.fill;
+    ctx.beginPath(); ctx.moveTo(0, H);
+    r.pts.forEach((p) => ctx.lineTo(p[0], p[1]));
+    ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // 水面
+  if (water) {
+    ctx.globalAlpha = 0.85; ctx.fillStyle = water.fill;
+    ctx.fillRect(0, water.y, W, H - water.y);
+    water.lines.forEach((l) => {
+      ctx.globalAlpha = l.o; ctx.fillStyle = l.gold ? '#d9b667' : '#ffffff';
+      ctx.fillRect(l.x, l.y, l.w, 1.3 * (W / 390));
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  // 金箔の散り
+  flecks.forEach((f) => {
+    ctx.globalAlpha = f.o; ctx.fillStyle = '#e3c878';
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill();
+  });
+  // 和紙の粒
+  grain.forEach((gg) => {
+    ctx.globalAlpha = gg.o; ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(gg.x, gg.y, gg.r, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // 口縁の暗がり
+  const vig = ctx.createRadialGradient(W / 2, H * 0.46, 0, W / 2, H * 0.46, Math.max(W, H) * 0.75);
+  vig.addColorStop(0, '#00000000'); vig.addColorStop(0.72, '#00000000');
+  vig.addColorStop(1, rgbToHex([0, 0, 0]) + Math.round(vignette * 255).toString(16).padStart(2, '0'));
+  ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
+
+  // 刻の色調
+  ctx.fillStyle = spec.tod.tint; ctx.fillRect(0, 0, W, H);
+}
